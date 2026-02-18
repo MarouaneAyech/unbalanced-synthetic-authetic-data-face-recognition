@@ -39,7 +39,7 @@ Over the recent years, the advancements in deep face recognition have fueled an 
 
 Install all necessary packages in a Python >=3.8 environment:
 ```
-   pip install torch torchvision numpy opencv-python mxnet easydict scipy==1.8.1 numpy==1.23.1
+   pip install torch torchvision numpy opencv-python easydict scipy==1.8.1 numpy==1.23.1 pillow scikit-learn
 ```
 
 ### Training

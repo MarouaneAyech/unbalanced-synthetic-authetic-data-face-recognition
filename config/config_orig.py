@@ -2,11 +2,11 @@ from easydict import EasyDict as edict
 
 config = edict()
 config.auth_dataset = "WF"
-config.synt_dataset = "DC"  # training dataset
-config.embedding_size = 128  # embedding size of model (réduit pour GPU faible)
+config.synt_dataset = "GC"  # training dataset
+config.embedding_size = 512  # embedding size of model
 config.momentum = 0.9
 config.weight_decay = 5e-4
-config.batch_size = 8  # batch size per GPU (réduit pour GPU faible, était 32)
+config.batch_size = 128  # batch size per GPU
 config.lr = 0.1
 config.output = "output/"  # train model output folder
 config.global_step = 0  # step to resume
@@ -40,38 +40,38 @@ elif config.loss == "ArcFace":
     config.m = 0.5
 
 config.auth_dict = {
-    "WF": r"D:\research\datasets\faces_webface_112x112\images",
-    # "M2-S": "/data/Authentic/faces_emore_10k/images",
-    # "BUPT": "/data/Authentic/faces_emore_10k/images",
-    # "BUPT_bal": "/data/Authentic/faces_emore_10k/images",
+    "WF": "/data/Authentic/casia_training/images",
+    "M2-S": "/data/Authentic/faces_emore_10k/images",
+    "BUPT": "/data/Authentic/faces_emore_10k/images",
+    "BUPT_bal": "/data/Authentic/faces_emore_10k/images",
 }
 
 config.synt_dict = {
-    "DC": r"D:\research\datasets\dcface_0.5m_oversample_xid\images",
-    # "GC_bal": "/data/Synthetic/GC_bal/images",
-    # "DC": "/data/Synthetic/dcface_0.5m_oversample_xid/images",
-    # "DC_bal": "/data/Synthetic/DC_bal/images",
-    # "IDF": "/data/Synthetic/Idifface/images",
-    # "IDF_bal": "/data/Synthetic/IDF_bal/images",
+    "GC": "/data/Synthetic/GAN_Control_class_images/images",
+    "GC_bal": "/data/Synthetic/GC_bal/images",
+    "DC": "/data/Synthetic/dcface_0.5m_oversample_xid/images",
+    "DC_bal": "/data/Synthetic/DC_bal/images",
+    "IDF": "/data/Synthetic/Idifface/images",
+    "IDF_bal": "/data/Synthetic/IDF_bal/images",
 }
 
 config.synthetic_root = config.synt_dict[config.synt_dataset]
 
 
-config.val_root = r"D:\research\datasets\benchmarks"
+config.val_root = "/data/FR_Benchmark"
 config.network = "iresnet34" # [ iresnet34 | iresnet50 | iresnet100 ]
 config.SE = False  # SEModule
 
 
 config.rec = config.auth_dict[config.auth_dataset]
-config.num_epoch = 2  # Réduit à 2 pour test rapide (était 5)
+config.num_epoch = 40  # [22, 30, 35]
 config.warmup_epoch = -1
-config.val_targets = ["lfw"]  # Un seul benchmark pour test rapide
+config.val_targets = ["lfw", "cfp_fp", "agedb_30", "calfw", "cplfw", "African_test", "Asian_test", "Caucasian_test", "Indian_test"]
 
 
 def lr_step_func(epoch):
     return ((epoch + 1) / (4 + 1)) ** 2 if epoch < config.warmup_epoch else 0.1 ** len(
-        [m for m in [3,4,5] if m - 1 <= epoch])
+        [m for m in [22, 30, 36] if m - 1 <= epoch])
 
 
 config.lr_func = lr_step_func

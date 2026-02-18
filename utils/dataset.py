@@ -6,7 +6,6 @@ import pickle
 import queue as Queue
 import threading
 import random
-import mxnet as mx
 import numpy as np
 import torch
 from torch.utils.data import DataLoader, Dataset
@@ -74,6 +73,27 @@ class DataLoaderX(DataLoader):
         return batch
 
 
+# class MXFaceDataset(Dataset):
+#     def __init__(self, root_dir, local_rank):
+#         super(MXFaceDataset, self).__init__()
+#         self.transform = transforms.Compose(
+#             [transforms.ToPILImage(),
+#              transforms.RandomHorizontalFlip(),
+#              transforms.ToTensor(),
+#              transforms.Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5]),
+#              ])
+#         self.root_dir = root_dir
+#         self.local_rank = local_rank
+#         path_imgrec = os.path.join(root_dir, 'train.rec')
+#         path_imgidx = os.path.join(root_dir, 'train.idx')
+#         self.imgrec = mx.recordio.MXIndexedRecordIO(path_imgidx, path_imgrec, 'r')
+#         s = self.imgrec.read_idx(0)
+#         header, _ = mx.recordio.unpack(s)
+#         if header.flag > 0:
+#             self.header0 = (int(header.label[0]), int(header.label[1]))
+#             self.imgidx = np.array(range(1, int(header.label[0])))
+#         else:
+#             self.imgidx = np.array(list(self.imgrec.keys))
 class MXFaceDataset(Dataset):
     def __init__(self, root_dir, local_rank):
         super(MXFaceDataset, self).__init__()
@@ -85,16 +105,39 @@ class MXFaceDataset(Dataset):
              ])
         self.root_dir = root_dir
         self.local_rank = local_rank
-        path_imgrec = os.path.join(root_dir, 'train.rec')
-        path_imgidx = os.path.join(root_dir, 'train.idx')
-        self.imgrec = mx.recordio.MXIndexedRecordIO(path_imgidx, path_imgrec, 'r')
-        s = self.imgrec.read_idx(0)
-        header, _ = mx.recordio.unpack(s)
-        if header.flag > 0:
-            self.header0 = (int(header.label[0]), int(header.label[1]))
-            self.imgidx = np.array(range(1, int(header.label[0])))
-        else:
-            self.imgidx = np.array(list(self.imgrec.keys))
+
+        # Remplace mx.recordio par lecture directe des dossiers
+        self.imgidx = []
+        self.labels = []
+        lb = 0
+        list_dir = sorted(os.listdir(root_dir))
+        for folder in list_dir:
+            folder_path = os.path.join(root_dir, folder)
+            if os.path.isdir(folder_path):
+                for img_file in os.listdir(folder_path):
+                    if img_file.lower().endswith(('.jpg', '.jpeg', '.png')):
+                        self.imgidx.append(os.path.join(folder_path, img_file))
+                        self.labels.append(lb)
+                lb += 1
+
+        self.imgidx = np.array(self.imgidx)
+        self.labels = np.array(self.labels)
+
+    def __getitem__(self, index):
+        img_path = self.imgidx[index]
+        label = self.labels[index]
+        label = torch.tensor(label, dtype=torch.long)
+
+        # Remplace mx.image.imdecode par cv2
+        img = cv2.imread(img_path)
+        img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+
+        if self.transform is not None:
+            sample = self.transform(img)
+        return sample, label
+
+    def __len__(self):
+        return len(self.imgidx)
 
     def __getitem__(self, index):
         idx = self.imgidx[index]

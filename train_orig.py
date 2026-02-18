@@ -6,14 +6,16 @@ import time
 
 import numpy as np
 import torch
+import torch.distributed as dist
 import torch.nn.functional as F
-from torch.utils.data import DataLoader
+from torch.nn.parallel.distributed import DistributedDataParallel
+import torch.utils.data.distributed
 from torch.nn.utils import clip_grad_norm_
 from torch.nn import CrossEntropyLoss
 
 from utils import losses
 from config.config import config as cfg
-from utils.dataset import FaceDatasetFolder
+from utils.dataset import DataLoaderX, FaceDatasetFolder
 from utils.utils_callbacks import CallBackVerification, CallBackLogging, CallBackModelCheckpoint
 from utils.utils_logging import AverageMeter, init_logging
 
@@ -21,6 +23,7 @@ from backbones.iresnet import iresnet100, iresnet50, iresnet34
 from cleanup import clean_folder
 
 torch.backends.cudnn.benchmark = True
+
 
 
 def format_output_folder(experiment, net, loss, auth_ds, synth_ds, auth_ids, synth_ids, cmt="", randaug=False):
@@ -36,17 +39,12 @@ def format_output_folder(experiment, net, loss, auth_ds, synth_ds, auth_ids, syn
 
 
 def main(args):
-    # -------------------------------------------------------
-    # Suppression du mode distribué → adapté pour 1 seul GPU
-    # -------------------------------------------------------
-    local_rank = 0
-    rank = 0
-    world_size = 1
-
-    # Détection automatique GPU ou CPU
-    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    print(f"Using device: {device}")
-
+    # dist.init_process_group(backend='nccl', init_method='env://')
+    dist.init_process_group(backend='gloo', init_method='env://')
+    local_rank = args.local_rank
+    torch.cuda.set_device(local_rank)
+    rank = dist.get_rank()
+    world_size = dist.get_world_size()
     auth_ids = int(args.auth_id)
     synth_ids = int(args.synth_id)
     cfg.auth_dataset = args.auth_ds
@@ -56,7 +54,7 @@ def main(args):
     cmt = args.cmt
 
     cfg.output = format_output_folder(
-        experiment="exp1",
+        experiment=experiment,
         net=cfg.network,
         loss=cfg.loss,
         auth_ds=cfg.auth_dataset,
@@ -68,21 +66,27 @@ def main(args):
     )
 
     global_step = cfg.global_step
-
-    if not os.path.exists(cfg.output):
+    if not os.path.exists(cfg.output) and rank==0:
         os.makedirs(cfg.output)
     elif os.path.exists(cfg.output):
         print(f"{cfg.output} already exists, skipping.")
         sys.exit(0)
 
+        content = os.listdir(cfg.output)
+        content = [int(c.replace("backbone.pth", "").replace("header.pth", "")) for c in content if c.endswith(".pth")]
+        if len(content) > 0:
+            global_step = max(content)
+            print(f"Training will resume from step {global_step}")
+    else:
+        time.sleep(2)
+
     log_root = logging.getLogger()
     init_logging(log_root, rank, cfg.output)
 
+
+
     logging.info(f"Dataset: {cfg.synthetic_root if synth_ids > 0 else cfg.rec}")
 
-    # -------------------------------------------------------
-    # Chargement du dataset
-    # -------------------------------------------------------
     trainset = FaceDatasetFolder(
         root_dir=cfg.synthetic_root,
         local_rank=local_rank,
@@ -93,139 +97,136 @@ def main(args):
     )
 
     num_ids = trainset.num_ids
-    cfg.num_classes = num_ids[0] + 1
+    cfg.num_classes = num_ids[0] +1
     cfg.num_image = len(trainset.imgidx)
     cfg.eval_step = int(len(trainset) / cfg.batch_size / world_size)
 
-    logging.info(f"Classes: {cfg.num_classes - num_ids[1]} synthetic, {num_ids[1]} real - {cfg.num_image} images - eval: {cfg.eval_step}")
+    if local_rank == 0:
+        logging.info(f"Classes: {cfg.num_classes - num_ids[1]} synthetic, {num_ids[1]} real - {cfg.num_image} images - eval: {cfg.eval_step}")
+        #logging.info(
+        #    f"Total Samples: {len(trainset)}")
+    train_sampler = torch.utils.data.distributed.DistributedSampler(
+        trainset, shuffle=True)
 
-    # -------------------------------------------------------
-    # Remplacer DistributedSampler par RandomSampler
-    # -------------------------------------------------------
-    train_sampler = torch.utils.data.RandomSampler(trainset)
+    train_loader = DataLoaderX(
+        local_rank=local_rank, dataset=trainset, batch_size=cfg.batch_size,
+        sampler=train_sampler, num_workers=0, pin_memory=True, drop_last=True)
 
-    # Remplacer DataLoaderX par DataLoader standard
-    train_loader = DataLoader(
-        dataset=trainset,
-        batch_size=cfg.batch_size,
-        sampler=train_sampler,
-        num_workers=0,
-        pin_memory=False,
-        drop_last=True
-    )
-
-    # -------------------------------------------------------
-    # Chargement du backbone
-    # -------------------------------------------------------
+    # load model
     if cfg.network == "iresnet100":
-        backbone = iresnet100(num_features=cfg.embedding_size, use_se=cfg.SE).to(device)
+        backbone = iresnet100(num_features=cfg.embedding_size, use_se=cfg.SE).to(local_rank)
     elif cfg.network == "iresnet50":
-        backbone = iresnet50(dropout=0.4, num_features=cfg.embedding_size, use_se=cfg.SE).to(device)
+        backbone = iresnet50(dropout=0.4,num_features=cfg.embedding_size, use_se=cfg.SE).to(local_rank)
     elif cfg.network == "iresnet34":
-        backbone = iresnet34(dropout=0.4, num_features=cfg.embedding_size, use_se=cfg.SE).to(device)
+        backbone = iresnet34(dropout=0.4,num_features=cfg.embedding_size, use_se=cfg.SE).to(local_rank)
     else:
         backbone = None
         logging.info("load backbone failed!")
         exit()
 
-    # Resume si checkpoint existant
-    if os.path.exists(cfg.output) and global_step > 0:
+    if os.path.exists(cfg.output) and rank == 0 and global_step > 0:
         try:
             backbone_pth = os.path.join(cfg.output, str(global_step) + "backbone.pth")
-            backbone.load_state_dict(torch.load(backbone_pth, map_location=device))
-            logging.info("backbone resume loaded successfully!")
+            backbone.load_state_dict(torch.load(backbone_pth, map_location=torch.device(torch.device("cuda:0"))))
+
+            if rank == 0:
+                logging.info("backbone resume loaded successfully!")
         except (FileNotFoundError, KeyError, IndexError, RuntimeError):
             logging.info(f"load backbone resume init, failed! {global_step}")
 
-    # -------------------------------------------------------
-    # Remplacer DistributedDataParallel par DataParallel
-    # -------------------------------------------------------
-    backbone = torch.nn.DataParallel(backbone)
+    for ps in backbone.parameters():
+        dist.broadcast(ps, 0)
+
+    backbone = DistributedDataParallel(
+        module=backbone, broadcast_buffers=False, device_ids=[local_rank])
     backbone.train()
 
-    # -------------------------------------------------------
-    # Chargement du header (loss)
-    # -------------------------------------------------------
+    # get header
     if cfg.loss == "ElasticArcFace":
-        header = losses.ElasticArcFace(in_features=cfg.embedding_size, out_features=cfg.num_classes, s=cfg.s, m=cfg.m, std=cfg.std).to(device)
+        header = losses.ElasticArcFace(in_features=cfg.embedding_size, out_features=cfg.num_classes, s=cfg.s, m=cfg.m,std=cfg.std).to(local_rank)
     elif cfg.loss == "ElasticArcFacePlus":
-        header = losses.ElasticArcFace(in_features=cfg.embedding_size, out_features=cfg.num_classes, s=cfg.s, m=cfg.m, std=cfg.std, plus=True).to(device)
+        header = losses.ElasticArcFace(in_features=cfg.embedding_size, out_features=cfg.num_classes, s=cfg.s, m=cfg.m,
+                                       std=cfg.std, plus=True).to(local_rank)
     elif cfg.loss == "ElasticCosFace":
-        header = losses.ElasticCosFace(in_features=cfg.embedding_size, out_features=cfg.num_classes, s=cfg.s, m=cfg.m, std=cfg.std).to(device)
+        header = losses.ElasticCosFace(in_features=cfg.embedding_size, out_features=cfg.num_classes, s=cfg.s, m=cfg.m,std=cfg.std).to(local_rank)
     elif cfg.loss == "ElasticCosFacePlus":
-        header = losses.ElasticCosFace(in_features=cfg.embedding_size, out_features=cfg.num_classes, s=cfg.s, m=cfg.m, std=cfg.std, plus=True).to(device)
+        header = losses.ElasticCosFace(in_features=cfg.embedding_size, out_features=cfg.num_classes, s=cfg.s, m=cfg.m,
+                                       std=cfg.std, plus=True).to(local_rank)
     elif cfg.loss == "ArcFace":
-        header = losses.ArcFace(in_features=cfg.embedding_size, out_features=cfg.num_classes, s=cfg.s, m=cfg.m).to(device)
+        header = losses.ArcFace(in_features=cfg.embedding_size, out_features=cfg.num_classes, s=cfg.s, m=cfg.m).to(local_rank)
     elif cfg.loss == "CosFace":
-        header = losses.CosFace(in_features=cfg.embedding_size, out_features=cfg.num_classes, s=cfg.s, m=cfg.m).to(device)
+        header = losses.CosFace(in_features=cfg.embedding_size, out_features=cfg.num_classes, s=cfg.s, m=cfg.m).to(
+            local_rank)
     elif cfg.loss == "AdaFace":
-        header = losses.AdaFace(in_features=cfg.embedding_size, out_features=cfg.num_classes, s=cfg.s, m=cfg.m).to(device)
+        header = losses.AdaFace(in_features=cfg.embedding_size, out_features=cfg.num_classes, s=cfg.s, m=cfg.m).to(
+            local_rank)
     else:
         print("Header not implemented")
-
-    # Resume header si checkpoint existant
-    if os.path.exists(cfg.output) and global_step > 0:
+    if os.path.exists(cfg.output) and rank == 0 and global_step > 0:
         try:
             header_pth = os.path.join(cfg.output, str(global_step) + "header.pth")
-            header.load_state_dict(torch.load(header_pth, map_location=device))
-            logging.info("header resume loaded successfully!")
+            header.load_state_dict(torch.load(header_pth, map_location=torch.device(local_rank)))
+
+            if rank == 0:
+                logging.info("header resume loaded successfully!")
         except (FileNotFoundError, KeyError, IndexError, RuntimeError):
             logging.info("header resume init, failed!")
-
-    # Remplacer DistributedDataParallel par DataParallel
-    header = torch.nn.DataParallel(header)
+    
+    header = DistributedDataParallel(
+        module=header, broadcast_buffers=False, device_ids=[local_rank])
     header.train()
 
-    # -------------------------------------------------------
-    # Optimiseurs
-    # -------------------------------------------------------
     opt_backbone = torch.optim.SGD(
         params=[{'params': backbone.parameters()}],
         lr=cfg.lr / 512 * cfg.batch_size * world_size,
-        momentum=0.9,
-        weight_decay=cfg.weight_decay
-    )
+        momentum=0.9, weight_decay=cfg.weight_decay)
     opt_header = torch.optim.SGD(
         params=[{'params': header.parameters()}],
         lr=cfg.lr / 512 * cfg.batch_size * world_size,
-        momentum=0.9,
-        weight_decay=cfg.weight_decay
-    )
+        momentum=0.9, weight_decay=cfg.weight_decay)
 
     scheduler_backbone = torch.optim.lr_scheduler.LambdaLR(
         optimizer=opt_backbone, lr_lambda=cfg.lr_func)
     scheduler_header = torch.optim.lr_scheduler.LambdaLR(
-        optimizer=opt_header, lr_lambda=cfg.lr_func)
+        optimizer=opt_header, lr_lambda=cfg.lr_func)        
 
     criterion = CrossEntropyLoss()
 
     start_epoch = 0
     total_step = int(len(trainset) / cfg.batch_size / world_size * cfg.num_epoch)
-    logging.info("Total Step is: %d" % total_step)
+    if rank == 0: logging.info("Total Step is: %d" % total_step)
 
-    # -------------------------------------------------------
-    # Callbacks
-    # -------------------------------------------------------
+    if os.path.exists(cfg.output) and rank == 0 and global_step > 0:
+        rem_steps = (total_step - global_step)
+        cur_epoch = cfg.num_epoch - int(cfg.num_epoch / total_step * rem_steps)
+        logging.info("resume from estimated epoch {}".format(cur_epoch))
+        logging.info("remaining steps {}".format(rem_steps))
+        
+        start_epoch = cur_epoch
+        scheduler_backbone.last_epoch = cur_epoch
+        scheduler_header.last_epoch = cur_epoch
+
+        # --------- this could be solved more elegant ----------------
+        opt_backbone.param_groups[0]['lr'] = scheduler_backbone.get_lr()[0]
+        opt_header.param_groups[0]['lr'] = scheduler_header.get_lr()[0]
+
+        print("last learning rate: {}".format(scheduler_header.get_lr()))
+        # ------------------------------------------------------------
+
     callback_verification = CallBackVerification(cfg.eval_step, rank, cfg.val_targets, cfg.val_root)
     callback_logging = CallBackLogging(50, rank, total_step, cfg.batch_size, world_size, writer=None)
     callback_checkpoint = CallBackModelCheckpoint(rank, cfg.output)
-
     loss = AverageMeter()
     global_step = global_step
-
-    # -------------------------------------------------------
-    # Boucle d'entraînement
-    # -------------------------------------------------------
     for epoch in range(start_epoch, cfg.num_epoch):
-        # Pas de set_epoch() car RandomSampler mélange automatiquement
+        train_sampler.set_epoch(epoch)
         for _, (img, label) in enumerate(train_loader):
             global_step += 1
-
-            # Utiliser device au lieu de cuda(local_rank)
-            img = img.to(device)
-            label = label.to(device)
+            img = img.cuda(local_rank, non_blocking=True)
+            label = label.cuda(local_rank, non_blocking=True)
 
             features = F.normalize(backbone(img))
+
             thetas = header(features, label)
             loss_v = criterion(thetas, label)
             loss_v.backward()
@@ -234,19 +235,22 @@ def main(args):
 
             opt_backbone.step()
             opt_header.step()
+
             opt_backbone.zero_grad()
             opt_header.zero_grad()
 
             loss.update(loss_v.item(), 1)
+            
             callback_logging(global_step, loss, epoch)
             callback_verification(global_step, backbone)
 
         scheduler_backbone.step()
         scheduler_header.step()
+
         callback_checkpoint(global_step, backbone, header)
 
     clean_folder(cfg.output)
-    # Suppression de dist.destroy_process_group() car plus de mode distribué
+    dist.destroy_process_group()
 
 
 if __name__ == "__main__":
@@ -256,8 +260,8 @@ if __name__ == "__main__":
     parser.add_argument("--auth_id", type=int, default=0, help="authentic identities")
     parser.add_argument("--auth_ds", type=str, default="WF", help="authentic dataset")
     parser.add_argument("--synth_id", type=int, default=0, help="synthetic identities")
-    parser.add_argument("--synth_ds", type=str, default="DC", help="synthetic dataset")
-    parser.add_argument("--randaug", type=bool, default=False, help="Use RandAugment")
+    parser.add_argument("--synth_ds", type=str, default="GC", help="synthetic dataset")
+    parser.add_argument("--randaug", type=bool, default="False", help="Use RandAugment")
     parser.add_argument("--cmt", type=str, default="", help="additional comments")
 
     args_ = parser.parse_args()

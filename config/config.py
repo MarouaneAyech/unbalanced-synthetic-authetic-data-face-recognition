@@ -40,14 +40,14 @@ elif config.loss == "ArcFace":
     config.m = 0.5
 
 config.auth_dict = {
-    "WF": r"D:\research\datasets\faces_webface_112x112\images",
+    "WF": r"/content/drive/MyDrive/research_face_recog/datasets/webface",
     # "M2-S": "/data/Authentic/faces_emore_10k/images",
     # "BUPT": "/data/Authentic/faces_emore_10k/images",
     # "BUPT_bal": "/data/Authentic/faces_emore_10k/images",
 }
 
 config.synt_dict = {
-    "DC": r"D:\research\datasets\dcface_0.5m_oversample_xid\images",
+    "DC": r"/content/drive/MyDrive/research_face_recog/datasets/dcface",
     # "GC_bal": "/data/Synthetic/GC_bal/images",
     # "DC": "/data/Synthetic/dcface_0.5m_oversample_xid/images",
     # "DC_bal": "/data/Synthetic/DC_bal/images",
@@ -58,25 +58,18 @@ config.synt_dict = {
 config.synthetic_root = config.synt_dict[config.synt_dataset]
 
 
-config.val_root = r"D:\research\datasets\benchmarks"
+config.val_root = r"/content/drive/MyDrive/research_face_recog/datasets/benchmarks"
 config.network = "iresnet34" # [ iresnet34 | iresnet50 | iresnet100 ]
 config.SE = False  # SEModule
-
 
 config.rec = config.auth_dict[config.auth_dataset]
 config.num_epoch = 2  # Réduit à 2 pour test rapide (était 5)
 config.warmup_epoch = -1
-
-# Benchmarks pour VALIDATION pendant training (rapide, léger)
-config.val_targets = ["cfp_fp"]  # 1 seul pendant training pour éviter OOM
-
-# Benchmarks pour ÉVALUATION FINALE (après training, sans data leakage)
-# Utiliser eval/final_evaluation.py qui évalue UN benchmark à la fois
+config.val_targets = ["lfw"]  # Un seul benchmark pour test rapide
 config.test_targets = ["lfw", "cfp_fp", "cfp_ff", "agedb_30", "calfw", "cplfw"]
 
 def lr_step_func(epoch):
     return ((epoch + 1) / (4 + 1)) ** 2 if epoch < config.warmup_epoch else 0.1 ** len(
         [m for m in [3,4,5] if m - 1 <= epoch])
-
 
 config.lr_func = lr_step_func

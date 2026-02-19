@@ -66,8 +66,13 @@ config.SE = False  # SEModule
 config.rec = config.auth_dict[config.auth_dataset]
 config.num_epoch = 2  # Réduit à 2 pour test rapide (était 5)
 config.warmup_epoch = -1
-config.val_targets = ["lfw"]  # Un seul benchmark pour test rapide
 
+# Benchmarks pour VALIDATION pendant training (rapide, léger)
+config.val_targets = ["cfp_fp"]  # 1 seul pendant training pour éviter OOM
+
+# Benchmarks pour ÉVALUATION FINALE (après training, sans data leakage)
+# Utiliser eval/final_evaluation.py qui évalue UN benchmark à la fois
+config.test_targets = ["lfw", "cfp_fp", "cfp_ff", "agedb_30", "calfw", "cplfw"]
 
 def lr_step_func(epoch):
     return ((epoch + 1) / (4 + 1)) ** 2 if epoch < config.warmup_epoch else 0.1 ** len(

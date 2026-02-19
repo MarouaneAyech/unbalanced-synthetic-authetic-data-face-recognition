@@ -145,9 +145,30 @@ def calculate_val(thresholds,
         for threshold_idx, threshold in enumerate(thresholds):
             _, far_train[threshold_idx] = calculate_val_far(
                 threshold, dist[train_set], actual_issame[train_set])
+        
         if np.max(far_train) >= far_target:
-            f = interpolate.interp1d(far_train, thresholds, kind='slinear')
-            threshold = f(far_target)
+            # Gérer les valeurs dupliquées et monotones pour l'interpolation
+            # Trouver les indices uniques en conservant l'ordre croissant
+            sort_idx = np.argsort(far_train)
+            far_train_sorted = far_train[sort_idx]
+            thresholds_sorted = thresholds[sort_idx]
+            
+            # Garder seulement les valeurs uniques
+            unique_mask = np.concatenate(([True], np.diff(far_train_sorted) > 0))
+            far_train_unique = far_train_sorted[unique_mask]
+            thresholds_unique = thresholds_sorted[unique_mask]
+            
+            try:
+                if len(far_train_unique) > 1:
+                    f = interpolate.interp1d(far_train_unique, thresholds_unique, kind='linear',
+                                            bounds_error=False, fill_value='extrapolate')
+                    threshold = float(f(far_target))
+                else:
+                    threshold = thresholds_unique[0]
+            except Exception as e:
+                # Fallback: utiliser le seuil le plus proche
+                closest_idx = np.argmin(np.abs(far_train_unique - far_target))
+                threshold = thresholds_unique[closest_idx]
         else:
             threshold = 0.0
 
@@ -260,7 +281,7 @@ def load_bin(path, image_size):
     return data_list, issame_list
 
 @torch.no_grad()
-def test(data_set, backbone, batch_size, nfolds=10):
+def test(data_set, backbone, batch_size, nfolds=10, device='cuda:0'):
     print('testing verification..')
     data_list = data_set[0]
     issame_list = data_set[1]
@@ -276,6 +297,7 @@ def test(data_set, backbone, batch_size, nfolds=10):
             _data = data[bb - batch_size: bb]
             time0 = datetime.datetime.now()
             img = ((_data / 255) - 0.5) / 0.5
+            img = img.to(device)  # IMPORTANT: Send to GPU
             net_out: torch.Tensor = backbone(img)
             _embeddings = net_out.detach().cpu().numpy()
             time_now = datetime.datetime.now()

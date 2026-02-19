@@ -22,9 +22,11 @@ class CallBackVerification(object):
 
     def ver_test(self, backbone: torch.nn.Module, global_step: int):
         results = []
+        # Get device from backbone parameters
+        device = next(backbone.parameters()).device
         for i in range(len(self.ver_list)):
             acc1, std1, acc2, std2, xnorm, embeddings_list = verification.test(
-                self.ver_list[i], backbone, 10, 10)
+                self.ver_list[i], backbone, 10, 10, device=str(device))
             logging.info('[%s][%d]XNorm: %f' % (self.ver_name_list[i], global_step, xnorm))
             logging.info('[%s][%d]Accuracy-Flip: %1.5f+-%1.5f' % (self.ver_name_list[i], global_step, acc2, std2))
             if acc2 > self.highest_acc_list[i]:

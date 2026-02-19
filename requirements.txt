@@ -1,0 +1,8 @@
+torch torchvision
+opencv-python
+mxnet
+easydict
+scipy
+numpy
+scikit-learn
+pillow

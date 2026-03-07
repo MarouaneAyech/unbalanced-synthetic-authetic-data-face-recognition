@@ -40,14 +40,14 @@ elif config.loss == "ArcFace":
     config.m = 0.5
 
 config.auth_dict = {
-    "WF": r"/content/drive/MyDrive/research_face_recog/datasets/webface",
+    "WF": r"/content/drive/MyDrive/research/datasets/webface",
     # "M2-S": "/data/Authentic/faces_emore_10k/images",
     # "BUPT": "/data/Authentic/faces_emore_10k/images",
     # "BUPT_bal": "/data/Authentic/faces_emore_10k/images",
 }
 
 config.synt_dict = {
-    "DC": r"/content/drive/MyDrive/research_face_recog/datasets/dcface",
+    "DC": r"/content/drive/MyDrive/research/datasets/dcface",
     # "GC_bal": "/data/Synthetic/GC_bal/images",
     # "DC": "/data/Synthetic/dcface_0.5m_oversample_xid/images",
     # "DC_bal": "/data/Synthetic/DC_bal/images",
@@ -58,7 +58,7 @@ config.synt_dict = {
 config.synthetic_root = config.synt_dict[config.synt_dataset]
 
 
-config.val_root = r"/content/drive/MyDrive/research_face_recog/datasets/benchmarks"
+config.val_root = r"/content/drive/MyDrive/research/datasets/benchmarks"
 config.network = "iresnet34" # [ iresnet34 | iresnet50 | iresnet100 ]
 config.SE = False  # SEModule
 
